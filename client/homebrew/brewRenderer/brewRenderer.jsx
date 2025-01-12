@@ -1,12 +1,13 @@
 /*eslint max-lines: ["warn", {"max": 300, "skipBlankLines": true, "skipComments": true}]*/
 require('./brewRenderer.less');
 const React = require('react');
-const { useState, useRef, useEffect } = React;
+const { useState, useRef, useMemo, useEffect } = React;
 const _ = require('lodash');
 
 const MarkdownLegacy = require('naturalcrit/markdownLegacy.js');
-const Markdown = require('naturalcrit/markdown.js');
+import Markdown from 'naturalcrit/markdown.js';
 const ErrorBar = require('./errorBar/errorBar.jsx');
+const ToolBar  = require('./toolBar/toolBar.jsx');
 
 //TODO: move to the brew renderer
 const RenderWarnings = require('homebrewery/renderWarnings/renderWarnings.jsx');
@@ -15,10 +16,10 @@ const Frame = require('react-frame-component').default;
 const dedent = require('dedent-tabs').default;
 const { printCurrentBrew } = require('../../../shared/helpers.js');
 
-const DOMPurify = require('dompurify');
-const purifyConfig = { FORCE_BODY: true, SANITIZE_DOM: false };
+import HeaderNav from './headerNav/headerNav.jsx';
 
-const Themes = require('themes/themes.json');
+import { safeHTML } from './safeHTML.js';
+
 
 const PAGE_HEIGHT = 1056;
 
@@ -30,6 +31,7 @@ const INITIAL_CONTENT = dedent`
 	<base target=_blank>
 	</head><body style='overflow: hidden'><div></div></body></html>`;
 
+
 //v=====----------------------< Brew Page Component >---------------------=====v//
 const BrewPage = (props)=>{
 	props = {
@@ -37,37 +39,89 @@ const BrewPage = (props)=>{
 		index    : 0,
 		...props
 	};
-	const cleanText = DOMPurify.sanitize(props.contents, purifyConfig);
-	return <div className={props.className} id={`p${props.index + 1}`} >
+	const pageRef = useRef(null);
+	const cleanText = safeHTML(props.contents);
+
+	useEffect(()=>{
+		if(!pageRef.current) return;
+
+		// Observer for tracking pages within the `.pages` div
+		const visibleObserver = new IntersectionObserver(
+			(entries)=>{
+				entries.forEach((entry)=>{
+					if(entry.isIntersecting)
+						props.onVisibilityChange(props.index + 1, true, false); // add page to array of visible pages.
+					else
+						props.onVisibilityChange(props.index + 1, false, false);
+				});
+			},
+			{ threshold: .3, rootMargin: '0px 0px 0px 0px'  } // detect when >30% of page is within bounds.
+		);
+
+		// Observer for tracking the page at the center of the iframe.
+		const centerObserver = new IntersectionObserver(
+			(entries)=>{
+				entries.forEach((entry)=>{
+					if(entry.isIntersecting)
+						props.onVisibilityChange(props.index + 1, true, true); // Set this page as the center page
+				});
+			},
+			{ threshold: 0, rootMargin: '-50% 0px -50% 0px' } // Detect when the page is at the center
+		);
+
+		// attach observers to each `.page`
+		visibleObserver.observe(pageRef.current);
+		centerObserver.observe(pageRef.current);
+		return ()=>{
+			visibleObserver.disconnect();
+			centerObserver.disconnect();
+		};
+	}, []);
+
+	return <div className={props.className} id={`p${props.index + 1}`} data-index={props.index} ref={pageRef} style={props.style}>
 	         <div className='columnWrapper' dangerouslySetInnerHTML={{ __html: cleanText }} />
 	       </div>;
 };
 
 
 //v=====--------------------< Brew Renderer Component >-------------------=====v//
-const renderedPages = [];
+let renderedPages = [];
 let rawPages      = [];
 
 const BrewRenderer = (props)=>{
 	props = {
-		text              : '',
-		style             : '',
-		renderer          : 'legacy',
-		theme             : '5ePHB',
-		lang              : '',
-		errors            : [],
-		currentEditorPage : 0,
+		text                       : '',
+		style                      : '',
+		renderer                   : 'legacy',
+		theme                      : '5ePHB',
+		lang                       : '',
+		errors                     : [],
+		currentEditorCursorPageNum : 1,
+		currentEditorViewPageNum   : 1,
+		currentBrewRendererPageNum : 1,
+		themeBundle                : {},
+		onPageChange               : ()=>{},
 		...props
 	};
 
 	const [state, setState] = useState({
-		viewablePageNumber : 0,
-		height             : PAGE_HEIGHT,
-		isMounted          : false,
-		visibility         : 'hidden',
+		isMounted    : false,
+		visibility   : 'hidden',
+		visiblePages : [],
+		centerPage   : 1
 	});
 
+	const [displayOptions, setDisplayOptions] = useState({
+		zoomLevel    : 100,
+		spread       : 'single',
+		startOnRight : true,
+		pageShadows  : true
+	});
+
+	const [headerState, setHeaderState] = useState(false);
+
 	const mainRef  = useRef(null);
+	const pagesRef = useRef(null);
 
 	if(props.renderer == 'legacy') {
 		rawPages = props.text.split('\\page');
@@ -75,47 +129,34 @@ const BrewRenderer = (props)=>{
 		rawPages = props.text.split(/^\\page$/gm);
 	}
 
-	useEffect(()=>{ // Unmounting steps
-		return ()=>{window.removeEventListener('resize', updateSize);};
-	}, []);
+	const handlePageVisibilityChange = (pageNum, isVisible, isCenter)=>{
+		setState((prevState)=>{
+			const updatedVisiblePages = new Set(prevState.visiblePages);
+			if(!isCenter)
+				isVisible ? updatedVisiblePages.add(pageNum) : updatedVisiblePages.delete(pageNum);
 
-	const updateSize = ()=>{
-		setState((prevState)=>({
-			...prevState,
-			height : mainRef.current.parentNode.clientHeight,
-		}));
-	};
+			return {
+				...prevState,
+				visiblePages : [...updatedVisiblePages].sort((a, b)=>a - b),
+				centerPage   : isCenter ? pageNum : prevState.centerPage
+			};
+		});
 
-	const handleScroll = (e)=>{
-		const target = e.target;
-		setState((prevState)=>({
-			...prevState,
-			viewablePageNumber : Math.floor(target.scrollTop / target.scrollHeight * rawPages.length)
-		}));
+		if(isCenter)
+			props.onPageChange(pageNum);
 	};
 
 	const isInView = (index)=>{
 		if(!state.isMounted)
 			return false;
 
-		if(index == props.currentEditorPage)	//Already rendered before this step
+		if(index == props.currentEditorCursorPageNum - 1)	//Already rendered before this step
 			return false;
 
-		if(Math.abs(index - state.viewablePageNumber) <= 3)
+		if(Math.abs(index - props.currentBrewRendererPageNum - 1) <= 3)
 			return true;
 
 		return false;
-	};
-
-	const renderPageInfo = ()=>{
-		return <div className='pageInfo' ref={mainRef}>
-			<div>
-				{props.renderer}
-			</div>
-			<div>
-				{state.viewablePageNumber + 1} / {rawPages.length}
-			</div>
-		</div>;
 	};
 
 	const renderDummyPage = (index)=>{
@@ -125,20 +166,27 @@ const BrewRenderer = (props)=>{
 	};
 
 	const renderStyle = ()=>{
-		if(!props.style) return;
-		const cleanStyle = DOMPurify.sanitize(props.style, purifyConfig);
-		//return <div style={{ display: 'none' }} dangerouslySetInnerHTML={{ __html: `<style>@layer styleTab {\n${sanitizeScriptTags(props.style)}\n} </style>` }} />;
-		return <div style={{ display: 'none' }} dangerouslySetInnerHTML={{ __html: `<style> ${cleanStyle} </style>` }} />;
+		const themeStyles = props.themeBundle?.joinedStyles ?? '<style>@import url("/themes/V3/Blank/style.css");</style>';
+		const cleanStyle = safeHTML(`${themeStyles} \n\n <style> ${props.style} </style>`);
+		return <div style={{ display: 'none' }} dangerouslySetInnerHTML={{ __html: cleanStyle }} />;
 	};
 
 	const renderPage = (pageText, index)=>{
+
+		const styles = {
+			...(!displayOptions.pageShadows ? { boxShadow: 'none' } : {})
+			// Add more conditions as needed
+		};
+
 		if(props.renderer == 'legacy') {
 			const html = MarkdownLegacy.render(pageText);
-			return <BrewPage className='page phb' index={index} key={index} contents={html} />;
+
+			return <BrewPage className='page phb' index={index} key={index} contents={html} style={styles} onVisibilityChange={handlePageVisibilityChange} />;
 		} else {
 			pageText += `\n\n&nbsp;\n\\column\n&nbsp;`; //Artificial column break at page end to emulate column-fill:auto (until `wide` is used, when column-fill:balance will reappear)
 			const html = Markdown.render(pageText, index);
-			return <BrewPage className='page' index={index} key={index} contents={html} />;
+
+			return <BrewPage className='page' index={index} key={index} contents={html} style={styles} onVisibilityChange={handlePageVisibilityChange} />;
 		}
 	};
 
@@ -150,7 +198,8 @@ const BrewRenderer = (props)=>{
 			renderedPages.length = 0;
 
 		// Render currently-edited page first so cross-page effects (variables, links) can propagate out first
-		renderedPages[props.currentEditorPage] = renderPage(rawPages[props.currentEditorPage], props.currentEditorPage);
+		if(rawPages.length > props.currentEditorCursorPageNum -1)
+			renderedPages[props.currentEditorCursorPageNum - 1] = renderPage(rawPages[props.currentEditorCursorPageNum - 1], props.currentEditorCursorPageNum - 1);
 
 		_.forEach(rawPages, (page, index)=>{
 			if((isInView(index) || !renderedPages[index]) && typeof window !== 'undefined'){
@@ -170,10 +219,30 @@ const BrewRenderer = (props)=>{
 		}
 	};
 
+	const scrollToHash = (hash)=>{
+		if(!hash) return;
+
+		const iframeDoc = document.getElementById('BrewRenderer').contentDocument;
+		let anchor = iframeDoc.querySelector(hash);
+
+		if(anchor) {
+			anchor.scrollIntoView({ behavior: 'smooth' });
+		} else {
+			// Use MutationObserver to wait for the element if it's not immediately available
+			new MutationObserver((mutations, obs)=>{
+				anchor = iframeDoc.querySelector(hash);
+				if(anchor) {
+					anchor.scrollIntoView({ behavior: 'smooth' });
+					obs.disconnect();
+				}
+			}).observe(iframeDoc, { childList: true, subtree: true });
+		}
+	};
+
 	const frameDidMount = ()=>{	//This triggers when iFrame finishes internal "componentDidMount"
+		scrollToHash(window.location.hash);
+
 		setTimeout(()=>{	//We still see a flicker where the style isn't applied yet, so wait 100ms before showing iFrame
-			updateSize();
-			window.addEventListener('resize', updateSize);
 			renderPages(); //Make sure page is renderable before showing
 			setState((prevState)=>({
 				...prevState,
@@ -188,15 +257,30 @@ const BrewRenderer = (props)=>{
 		document.dispatchEvent(new MouseEvent('click'));
 	};
 
-	const rendererPath  = props.renderer == 'V3' ? 'V3' : 'Legacy';
-	const themePath     = props.theme ?? '5ePHB';
-	const baseThemePath = Themes[rendererPath][themePath].baseTheme;
+	const handleDisplayOptionsChange = (newDisplayOptions)=>{
+		setDisplayOptions(newDisplayOptions);
+	};
+
+	const pagesStyle = {
+		zoom      : `${displayOptions.zoomLevel}%`,
+		columnGap : `${displayOptions.columnGap}px`,
+		rowGap    : `${displayOptions.rowGap}px`
+	};
+
+	const styleObject = {};
+
+	if(global.config.deployment) {
+		styleObject.backgroundImage = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' version='1.1' height='40px' width='200px'><text x='0' y='15' fill='%23fff7' font-size='20'>${global.config.deployment}</text></svg>")`;
+	}
+
+	const renderedStyle = useMemo(()=>renderStyle(), [props.style, props.themeBundle]);
+	renderedPages = useMemo(()=>renderPages(), [props.text, displayOptions]);
 
 	return (
 		<>
 			{/*render dummy page while iFrame is mounting.*/}
 			{!state.isMounted
-				? <div className='brewRenderer' onScroll={handleScroll}>
+				? <div className='brewRenderer'>
 					<div className='pages'>
 						{renderDummyPage(1)}
 					</div>
@@ -204,10 +288,12 @@ const BrewRenderer = (props)=>{
 				: null}
 
 			<ErrorBar errors={props.errors} />
-			<div className='popups'>
+			<div className='popups' ref={mainRef}>
 				<RenderWarnings />
 				<NotificationPopup />
 			</div>
+
+			<ToolBar displayOptions={displayOptions} onDisplayOptionsChange={handleDisplayOptionsChange} visiblePages={state.visiblePages.length > 0 ? state.visiblePages : [state.centerPage]} totalPages={rawPages.length} headerState={headerState} setHeaderState={setHeaderState}/>
 
 			{/*render in iFrame so broken code doesn't crash the site.*/}
 			<Frame id='BrewRenderer' initialContent={INITIAL_CONTENT}
@@ -215,31 +301,25 @@ const BrewRenderer = (props)=>{
 				contentDidMount={frameDidMount}
 				onClick={()=>{emitClick();}}
 			>
-				<div className={'brewRenderer'}
-					onScroll={handleScroll}
+				<div className={`brewRenderer ${global.config.deployment && 'deployment'}`}
 					onKeyDown={handleControlKeys}
 					tabIndex={-1}
-					style={{ height: state.height }}>
-
-					<link href={`/themes/${rendererPath}/Blank/style.css`} type='text/css' rel='stylesheet'/>
-					{baseThemePath &&
-						<link href={`/themes/${rendererPath}/${baseThemePath}/style.css`} type='text/css' rel='stylesheet'/>
-					}
-					<link href={`/themes/${rendererPath}/${themePath}/style.css`} type='text/css' rel='stylesheet'/>
+					style={ styleObject }
+				>
 
 					{/* Apply CSS from Style tab and render pages from Markdown tab */}
 					{state.isMounted
 						&&
 						<>
-							{renderStyle()}
-							<div className='pages' lang={`${props.lang || 'en'}`}>
-								{renderPages()}
+							{renderedStyle}
+							<div className={`pages ${displayOptions.startOnRight ? 'recto' : 'verso'}	${displayOptions.spread}`} lang={`${props.lang || 'en'}`} style={pagesStyle} ref={pagesRef}>
+								{renderedPages}
 							</div>
 						</>
 					}
 				</div>
+				{headerState ? <HeaderNav ref={pagesRef} /> : <></>}
 			</Frame>
-			{renderPageInfo()}
 		</>
 	);
 };

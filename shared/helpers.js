@@ -1,5 +1,6 @@
-const _ = require('lodash');
-const yaml = require('js-yaml');
+import _       from 'lodash';
+import yaml    from 'js-yaml';
+import request from '../client/homebrew/utils/request-middleware.js';
 
 const splitTextStyleAndMetadata = (brew)=>{
 	brew.text = brew.text.replaceAll('\r\n', '\n');
@@ -15,6 +16,14 @@ const splitTextStyleAndMetadata = (brew)=>{
 		brew.style = brew.text.slice(7, index - 1);
 		brew.text = brew.text.slice(index + 5);
 	}
+	if(brew.text.startsWith('```snippets')) {
+		const index = brew.text.indexOf('```\n\n');
+		brew.snippets = brew.text.slice(11, index - 1);
+		brew.text = brew.text.slice(index + 5);
+	}
+
+	// Handle old brews that still have empty strings in the tags metadata
+	if(typeof brew.tags === 'string') brew.tags = brew.tags ? [brew.tags] : [];
 };
 
 const printCurrentBrew = ()=>{
@@ -28,7 +37,25 @@ const printCurrentBrew = ()=>{
 	}
 };
 
-module.exports = {
+const fetchThemeBundle = async (obj, renderer, theme)=>{
+	if(!renderer || !theme) return;
+	const res = await request
+			.get(`/api/theme/${renderer}/${theme}`)
+			.catch((err)=>{
+				obj.setState({ error: err });
+			});
+	if(!res) return;
+
+	const themeBundle = res.body;
+	themeBundle.joinedStyles = themeBundle.styles.map((style)=>`<style>${style}</style>`).join('\n\n');
+	obj.setState((prevState)=>({
+		...prevState,
+		themeBundle : themeBundle
+	}));
+};
+
+export {
 	splitTextStyleAndMetadata,
-	printCurrentBrew
+	printCurrentBrew,
+	fetchThemeBundle,
 };
