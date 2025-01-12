@@ -144,3 +144,20 @@ your contribution to the project, please join our [gitter chat][gitter-url].
 [github-mark-duplicate-url]: https://docs.github.com/en/free-pro-team@latest/github/managing-your-work-on-github/about-duplicate-issues-and-pull-requests
 [github-pr-docs-url]: https://docs.github.com/en/free-pro-team@latest/github/collaborating-with-issues-and-pull-requests/creating-a-pull-request
 [gitter-url]: https://gitter.im/naturalcrit/Lobby
+
+## Headless Rendering
+
+To render your brew headlessly, use the cli script
+
+```bash
+$ npm run cli -- write-brew ./your-brew.md output/your-brew.html
+```
+
+This will render your brew, and all its associated web assets, to the `output`
+directory as `your-brew.html`. To view the brew in your browser, you can server
+the files with a simple python server with:
+
+```bash
+$ python -m http.server 8080
+```
+
