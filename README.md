@@ -158,6 +158,7 @@ directory as `your-brew.html`. To view the brew in your browser, you can server
 the files with a simple python server with:
 
 ```bash
+$ cd output
 $ python -m http.server 8080
 ```
 
